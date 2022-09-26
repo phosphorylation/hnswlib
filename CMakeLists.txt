@@ -3,7 +3,7 @@ project(hnsw_lib
     LANGUAGES CXX)
 
 add_library(hnswlib INTERFACE)
-target_include_directories(hnswlib INTERFACE .) 
+target_include_directories(hnswlib INTERFACE .)
 
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     set(CMAKE_CXX_STANDARD 11)
@@ -24,4 +24,7 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
 
     add_executable(main main.cpp sift_1b.cpp)
     target_link_libraries(main hnswlib)
+
+    add_executable(create_index examples/create_index.cpp)
+    target_link_libraries(create_index hnswlib)
 endif()

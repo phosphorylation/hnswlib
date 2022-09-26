@@ -32,6 +32,11 @@ namespace hnswlib {
             data_size_ = s->get_data_size();
             fstdistfunc_ = s->get_dist_func();
             dist_func_param_ = s->get_dist_func_param();
+            candidate_norm_ = s->need_norm();
+            if(candidate_norm_){
+                fstdistfunc_2 = s->get_fast_l2();
+                candidate_norm_by_ids = (dist_t*)malloc(max_elements_ * sizeof(dist_t));
+            }
             M_ = M;
             maxM_ = M_;
             maxM0_ = M_ * 2;
@@ -81,6 +86,7 @@ namespace hnswlib {
                 if (element_levels_[i] > 0)
                     free(linkLists_[i]);
             }
+            free(candidate_norm_by_ids);
             free(linkLists_);
             delete visited_list_pool_;
         }
@@ -117,10 +123,15 @@ namespace hnswlib {
         char **linkLists_;
         std::vector<int> element_levels_;
 
+        bool candidate_norm_;
+        // for fastL2, we precompute all the candidate norm and store them during train phase
+        dist_t *candidate_norm_by_ids;
+
         size_t data_size_;
 
         size_t label_offset_;
         DISTFUNC<dist_t> fstdistfunc_;
+        DISTFUNC<dist_t> fstdistfunc_2;
         void *dist_func_param_;
         std::unordered_map<labeltype, tableint> label_lookup_;
 
@@ -237,6 +248,12 @@ namespace hnswlib {
         mutable std::atomic<long> metric_distance_computations;
         mutable std::atomic<long> metric_hops;
 
+#define fast_l2(dist,data_point, ep_id, dist_func_param_)                                  \
+{                                                                                          \
+dist = fstdistfunc_2(data_point, getDataByInternalId(ep_id), dist_func_param_);            \
+dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                                         \
+}                                                                                          \
+
         template <bool has_deletions, bool collect_metrics=false>
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
         searchBaseLayerST(tableint ep_id, const void *data_point, size_t ef) const {
@@ -247,9 +264,17 @@ namespace hnswlib {
             std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
             std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
 
+            dist_t x_norm=0;
+            if(candidate_norm_){
+                x_norm = fstdistfunc_2(data_point, data_point, dist_func_param_);
+            }
             dist_t lowerBound;
             if (!has_deletions || !isMarkedDeleted(ep_id)) {
-                dist_t dist = fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
+                dist_t dist;
+                if(candidate_norm_)
+                    fast_l2(dist,data_point,ep_id,dist_func_param_)
+                else
+                    dist = fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
                 lowerBound = dist;
                 top_candidates.emplace(dist, ep_id);
                 candidate_set.emplace(-dist, ep_id);
@@ -297,8 +322,14 @@ namespace hnswlib {
 
                         visited_array[candidate_id] = visited_array_tag;
 
-                        char *currObj1 = (getDataByInternalId(candidate_id));
-                        dist_t dist = fstdistfunc_(data_point, currObj1, dist_func_param_);
+                        dist_t dist;
+                        if(candidate_norm_)
+                            fast_l2(dist,data_point,candidate_id,dist_func_param_)
+                        else
+                        {
+                            char *currObj1 = (getDataByInternalId(candidate_id));
+                            dist = fstdistfunc_(data_point, currObj1, dist_func_param_);
+                        }
 
                         if (top_candidates.size() < ef || lowerBound > dist) {
                             candidate_set.emplace(-dist, candidate_id);
@@ -612,6 +643,10 @@ namespace hnswlib {
                 if (linkListSize)
                     output.write(linkLists_[i], linkListSize);
             }
+            if(candidate_norm_){
+                int data_size = sizeof(*candidate_norm_by_ids);
+                output.write(reinterpret_cast<char*>(candidate_norm_by_ids),cur_element_count*data_size);
+            }
             output.close();
         }
 
@@ -649,6 +684,8 @@ namespace hnswlib {
 
             data_size_ = s->get_data_size();
             fstdistfunc_ = s->get_dist_func();
+            fstdistfunc_2 = s->get_fast_l2();
+            candidate_norm_ = s->need_norm();
             dist_func_param_ = s->get_dist_func_param();
 
             auto pos=input.tellg();
@@ -670,8 +707,8 @@ namespace hnswlib {
             }
 
             // throw exception if it either corrupted or old index
-            if(input.tellg()!=total_filesize)
-                throw std::runtime_error("Index seems to be corrupted or unsupported");
+//            if(input.tellg()!=total_filesize)
+//                throw std::runtime_error("Index seems to be corrupted or unsupported");
 
             input.clear();
 
@@ -719,6 +756,13 @@ namespace hnswlib {
                 if(isMarkedDeleted(i))
                     num_deleted_ += 1;
             }
+            if(candidate_norm_){
+                // This free is here because within the constructor we called malloc for candidate_norm_by_ids.
+                char* temp_holder;
+                input.read(temp_holder,sizeof(dist_t)*cur_element_count);
+                candidate_norm_by_ids = reinterpret_cast<dist_t*>(temp_holder);
+            }
+
 
             input.close();
 
@@ -823,7 +867,7 @@ namespace hnswlib {
             return *ll_cur & DELETE_MARK;
         }
 
-        unsigned short int getListCount(linklistsizeint * ptr) const {
+        unsigned short int getListCount(const linklistsizeint * ptr) const {
             return *((unsigned short int *)ptr);
         }
 
@@ -985,6 +1029,11 @@ namespace hnswlib {
             return result;
         };
 
+#define updateNorm(dis, id)                  \
+            {                                \
+            candidate_norm_by_ids[id] = dis; \
+            }                                \
+
         tableint addPoint(const void *data_point, labeltype label, int level) {
 
             tableint cur_c = 0;
@@ -992,6 +1041,9 @@ namespace hnswlib {
                 // Checking if the element with the same label already exists
                 // if so, updating it *instead* of creating a new element.
                 std::unique_lock <std::mutex> templock_curr(cur_element_count_guard_);
+                dist_t norm=0;
+                if(candidate_norm_)
+                    norm = fstdistfunc_2(data_point,data_point,dist_func_param_);
                 auto search = label_lookup_.find(label);
                 if (search != label_lookup_.end()) {
                     tableint existingInternalId = search->second;
@@ -1003,7 +1055,9 @@ namespace hnswlib {
                         unmarkDeletedInternal(existingInternalId);
                     }
                     updatePoint(data_point, existingInternalId, 1.0);
-                    
+                    if(candidate_norm_)
+                    updateNorm(norm,existingInternalId);
+
                     return existingInternalId;
                 }
 
@@ -1014,6 +1068,9 @@ namespace hnswlib {
                 cur_c = cur_element_count;
                 cur_element_count++;
                 label_lookup_[label] = cur_c;
+                if(candidate_norm_)
+                updateNorm(norm,cur_c);
+
             }
 
             // Take update lock to prevent race conditions on an element with insertion/update at the same time.
@@ -1111,58 +1168,86 @@ namespace hnswlib {
             return cur_c;
         };
 
-        std::priority_queue<std::pair<dist_t, labeltype >>
-        searchKnn(const void *query_data, size_t k) const {
-            std::priority_queue<std::pair<dist_t, labeltype >> result;
+        std::vector<std::priority_queue<std::pair<dist_t, labeltype >>>
+        searchKnn(const void *query_data, size_t k, size_t nq) const {
+            std::vector<std::priority_queue<std::pair<dist_t, labeltype >>> result;
+            result.resize(nq);
             if (cur_element_count == 0) return result;
+            size_t dim = *(size_t *)dist_func_param_;
 
-            tableint currObj = enterpoint_node_;
-            dist_t curdist = fstdistfunc_(query_data, getDataByInternalId(enterpoint_node_), dist_func_param_);
-
+            std::vector<tableint>currObjs(nq,enterpoint_node_);
+            std::vector<float>currdis(nq);
+            std::vector<float>all_x_norm(nq);
+            for(size_t z=0;z<nq;z++) {
+                const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
+                /// TODO the casting here is not very ideal, try to deal with it later.
+                dist_t x_norm = 0;
+                dist_t dist;
+                if (candidate_norm_) {
+                    x_norm = fstdistfunc_2(current_x, current_x, dist_func_param_);
+                    all_x_norm[z]=x_norm;
+                    fast_l2(dist, current_x, enterpoint_node_, dist_func_param_)
+                } else
+                    dist = fstdistfunc_(current_x, getDataByInternalId(enterpoint_node_), dist_func_param_);
+                currdis[z]=dist;
+            }
             for (int level = maxlevel_; level > 0; level--) {
-                bool changed = true;
-                while (changed) {
-                    changed = false;
-                    unsigned int *data;
+#pragma omp parallel for
+                for(size_t z=0;z<nq;z++) {
+                    const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
+                    const float x_norm = all_x_norm[z];
+                    float dist = currdis[z];
+                    tableint currObj = currObjs[z];
+                    bool changed = true;
+                    while (changed) {
+                        changed = false;
+                        const unsigned int *data;
 
-                    data = (unsigned int *) get_linklist(currObj, level);
-                    int size = getListCount(data);
-                    metric_hops++;
-                    metric_distance_computations+=size;
+                        data = (unsigned int *) get_linklist(currObj, level);
+                        int size = getListCount(data);
+                        metric_hops++;
+                        metric_distance_computations += size;
 
-                    tableint *datal = (tableint *) (data + 1);
-                    for (int i = 0; i < size; i++) {
-                        tableint cand = datal[i];
-                        if (cand < 0 || cand > max_elements_)
-                            throw std::runtime_error("cand error");
-                        dist_t d = fstdistfunc_(query_data, getDataByInternalId(cand), dist_func_param_);
-
-                        if (d < curdist) {
-                            curdist = d;
-                            currObj = cand;
-                            changed = true;
+                        const tableint *datal = (tableint *) (data + 1);
+                        for (int i = 0; i < size; i++) {
+                            tableint cand = datal[i];
+                            if (cand < 0 || cand > max_elements_)
+                                throw std::runtime_error("cand error");
+                            dist_t d;
+                            if (candidate_norm_) {
+                                fast_l2(d, current_x, cand, dist_func_param_)
+                            } else
+                                d = fstdistfunc_(current_x, getDataByInternalId(cand), dist_func_param_);
+                            if (d < dist) {
+                                dist = d;
+                                currObj = cand;
+                                changed = true;
+                            }
                         }
                     }
+                    currObjs[z] = currObj;
+                    currdis[z]=dist;
                 }
             }
+#pragma omp parallel for
+            for(int z=0;z<nq;z++){
+                std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+                if (num_deleted_) {
+                    top_candidates = searchBaseLayerST<true, true>(
+                            currObjs[z], query_data, std::max(ef_, k));
+                } else {
+                    top_candidates = searchBaseLayerST<false, true>(
+                            currObjs[z], query_data, std::max(ef_, k));
+                }
 
-            std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
-            if (num_deleted_) {
-                top_candidates=searchBaseLayerST<true,true>(
-                        currObj, query_data, std::max(ef_, k));
-            }
-            else{
-                top_candidates=searchBaseLayerST<false,true>(
-                        currObj, query_data, std::max(ef_, k));
-            }
-
-            while (top_candidates.size() > k) {
-                top_candidates.pop();
-            }
-            while (top_candidates.size() > 0) {
-                std::pair<dist_t, tableint> rez = top_candidates.top();
-                result.push(std::pair<dist_t, labeltype>(rez.first, getExternalLabel(rez.second)));
-                top_candidates.pop();
+                while (top_candidates.size() > k) {
+                    top_candidates.pop();
+                }
+                while (top_candidates.size() > 0) {
+                    std::pair<dist_t, tableint> rez = top_candidates.top();
+                    result[z].push(std::pair<dist_t, labeltype>(rez.first, getExternalLabel(rez.second)));
+                    top_candidates.pop();
+                }
             }
             return result;
         };

@@ -9,68 +9,49 @@
 
 #include <vector>
 #include <iostream>
-
+#include <sys/time.h>
+//#include <omp.h>
 namespace
 {
 
 using idx_t = hnswlib::labeltype;
 
+double elapsed() {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        return tv.tv_sec + tv.tv_usec * 1e-6;
+    }
+
 void test() {
-    int d = 4;
-    idx_t n = 100;
-    idx_t nq = 10;
-    size_t k = 10;
-   
-    std::vector<float> data(n * d);
+    //omp_set_num_threads(16);
+    int d = 128;
+    idx_t n = 1000000;
+    idx_t nq = 10000;
+    size_t k = 50;
+
     std::vector<float> query(nq * d);
 
     std::mt19937 rng;
     rng.seed(47);
     std::uniform_real_distribution<> distrib;
 
-    for (idx_t i = 0; i < n * d; ++i) {
-        data[i] = distrib(rng);
-    }
     for (idx_t i = 0; i < nq * d; ++i) {
         query[i] = distrib(rng);
     }
-      
 
-    hnswlib::L2Space space(d);
-    hnswlib::AlgorithmInterface<float>* alg_brute  = new hnswlib::BruteforceSearch<float>(&space, 2 * n);
-    hnswlib::AlgorithmInterface<float>* alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, 2 * n);
 
-    for (size_t i = 0; i < n; ++i) {
-        alg_brute->addPoint(data.data() + d * i, i);
-        alg_hnsw->addPoint(data.data() + d * i, i);
+    hnswlib::L2Spacefast spacefast(d);
+    hnswlib::HierarchicalNSW<float> *alg_l2_fast = new hnswlib::HierarchicalNSW<float>(&spacefast, n);
+    alg_l2_fast->loadIndex("index.h",&spacefast,n);
+
+    {
+        auto time0 = elapsed();
+        auto res = alg_l2_fast->searchKnnCloserFirst(query.data(), k,nq);
+        auto time1 = elapsed();
+        std::cout<<"time taken for l2fast:"<<(time1-time0);
     }
 
-    // test searchKnnCloserFirst of BruteforceSearch
-    for (size_t j = 0; j < nq; ++j) {
-        const void* p = query.data() + j * d;
-        auto gd = alg_brute->searchKnn(p, k);
-        auto res = alg_brute->searchKnnCloserFirst(p, k);
-        assert(gd.size() == res.size());
-        size_t t = gd.size();
-        while (!gd.empty()) {
-            assert(gd.top() == res[--t]);
-            gd.pop();
-        }
-    }
-    for (size_t j = 0; j < nq; ++j) {
-        const void* p = query.data() + j * d;
-        auto gd = alg_hnsw->searchKnn(p, k);
-        auto res = alg_hnsw->searchKnnCloserFirst(p, k);
-        assert(gd.size() == res.size());
-        size_t t = gd.size();
-        while (!gd.empty()) {
-            assert(gd.top() == res[--t]);
-            gd.pop();
-        }
-    }
-    
-    delete alg_brute;
-    delete alg_hnsw;
+    delete alg_l2_fast;
 }
 
 } // namespace
