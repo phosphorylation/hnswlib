@@ -159,12 +159,13 @@ namespace hnswlib {
     class AlgorithmInterface {
     public:
         virtual void addPoint(const void *datapoint, labeltype label)=0;
+        virtual void batchAddPoints(const void *data_point, labeltype* label,size_t nq, int level);
         virtual std::vector<std::priority_queue<std::pair<dist_t, labeltype >>>
-        searchKnn(const void *query_data, size_t k, size_t nq) const = 0;
+        searchKnn(const void *query_data, size_t k, size_t nq, size_t num_thread=1) const = 0;
 
         // Return k nearest neighbor in the order of closer fist
         virtual std::vector<std::vector<std::pair<dist_t, labeltype>>>
-            searchKnnCloserFirst(const void* query_data, size_t k,size_t nq) const;
+            searchKnnCloserFirst(const void* query_data, size_t k,size_t nq, size_t num_thread=1) const;
 
         virtual void saveIndex(const std::string &location)=0;
         virtual ~AlgorithmInterface(){
@@ -173,11 +174,11 @@ namespace hnswlib {
 
     template<typename dist_t>
     std::vector<std::vector<std::pair<dist_t, labeltype>>>
-    AlgorithmInterface<dist_t>::searchKnnCloserFirst(const void* query_data, size_t k,size_t nq) const {
+    AlgorithmInterface<dist_t>::searchKnnCloserFirst(const void* query_data, size_t k,size_t nq, size_t num_thread) const {
         std::vector<std::vector<std::pair<dist_t, labeltype>>> result;
         result.resize(nq);
         // here searchKnn returns the result in the order of further first
-        auto ret = searchKnn(query_data, k, nq);
+        auto ret = searchKnn(query_data, k, nq,num_thread);
         {
             for(int i=0;i<nq;i++){
                 size_t sz = ret[i].size();
@@ -190,6 +191,11 @@ namespace hnswlib {
         }
 
         return result;
+    }
+
+    template<typename dist_t>
+    void AlgorithmInterface<dist_t>::batchAddPoints(const void *data_point, labeltype *label, size_t nq, int level) {
+
     }
 }
 

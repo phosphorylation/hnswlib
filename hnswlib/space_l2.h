@@ -575,6 +575,7 @@ namespace hnswlib {
         L2Spacefast(size_t dim) {
 
             fstdistfunc_ = L2Sqr;
+
 #if defined(USE_SSE) || defined(USE_AVX)
             if (dim % 16 == 0)
                 fstdistfunc_ = L2SqrSIMD16Ext;

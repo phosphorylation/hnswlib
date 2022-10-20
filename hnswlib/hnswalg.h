@@ -162,9 +162,14 @@ namespace hnswlib {
             return (int) r;
         }
 
+#define fast_l2(dist,data_point, ep_id, dist_func_param_)                                  \
+{                                                                                          \
+dist = fstdistfunc_2(data_point, getDataByInternalId(ep_id), dist_func_param_);            \
+dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                                         \
+}                                                                                          \
 
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
-        searchBaseLayer(tableint ep_id, const void *data_point, int layer) {
+        searchBaseLayer(tableint ep_id,dist_t x_norm, const void *data_point, int layer) {
             VisitedList *vl = visited_list_pool_->getFreeVisitedList();
             vl_type *visited_array = vl->mass;
             vl_type visited_array_tag = vl->curV;
@@ -174,7 +179,7 @@ namespace hnswlib {
 
             dist_t lowerBound;
             if (!isMarkedDeleted(ep_id)) {
-                dist_t dist = fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
+                   dist_t dist = fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
                 top_candidates.emplace(dist, ep_id);
                 lowerBound = dist;
                 candidateSet.emplace(-dist, ep_id);
@@ -221,8 +226,13 @@ namespace hnswlib {
                     if (visited_array[candidate_id] == visited_array_tag) continue;
                     visited_array[candidate_id] = visited_array_tag;
                     char *currObj1 = (getDataByInternalId(candidate_id));
-
-                    dist_t dist1 = fstdistfunc_(data_point, currObj1, dist_func_param_);
+                    dist_t dist1;
+                    if(candidate_norm_)
+                    {
+                        fast_l2(dist1,data_point,candidate_id,dist_func_param_);
+                    }
+                    else
+                        dist1 = fstdistfunc_(data_point, currObj1, dist_func_param_);
                     if (top_candidates.size() < ef_construction_ || lowerBound > dist1) {
                         candidateSet.emplace(-dist1, candidate_id);
 #ifdef USE_SSE
@@ -248,15 +258,9 @@ namespace hnswlib {
         mutable std::atomic<long> metric_distance_computations;
         mutable std::atomic<long> metric_hops;
 
-#define fast_l2(dist,data_point, ep_id, dist_func_param_)                                  \
-{                                                                                          \
-dist = fstdistfunc_2(data_point, getDataByInternalId(ep_id), dist_func_param_);            \
-dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                                         \
-}                                                                                          \
-
         template <bool has_deletions, bool collect_metrics=false>
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
-        searchBaseLayerST(tableint ep_id, const void *data_point, size_t ef) const {
+        searchBaseLayerST(tableint ep_id,dist_t x_norm, const void *data_point, size_t ef) const {
             VisitedList *vl = visited_list_pool_->getFreeVisitedList();
             vl_type *visited_array = vl->mass;
             vl_type visited_array_tag = vl->curV;
@@ -264,10 +268,6 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
             std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
             std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
 
-            dist_t x_norm=0;
-            if(candidate_norm_){
-                x_norm = fstdistfunc_2(data_point, data_point, dist_func_param_);
-            }
             dist_t lowerBound;
             if (!has_deletions || !isMarkedDeleted(ep_id)) {
                 dist_t dist;
@@ -758,9 +758,7 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
             }
             if(candidate_norm_){
                 // This free is here because within the constructor we called malloc for candidate_norm_by_ids.
-                char* temp_holder;
-                input.read(temp_holder,sizeof(dist_t)*cur_element_count);
-                candidate_norm_by_ids = reinterpret_cast<dist_t*>(temp_holder);
+                input.read(reinterpret_cast<char*>(candidate_norm_by_ids),sizeof(dist_t)*cur_element_count);
             }
 
 
@@ -994,7 +992,7 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
 
             for (int level = dataPointLevel; level >= 0; level--) {
                 std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> topCandidates = searchBaseLayer(
-                        currObj, dataPoint, level);
+                        currObj,0, dataPoint, level);
 
                 std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> filteredTopCandidates;
                 while (topCandidates.size() > 0) {
@@ -1082,7 +1080,9 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
 
             element_levels_[cur_c] = curlevel;
 
-
+/// TODO this global lock can chock parallel insertion performance
+/// if any insertion is assigned a level >max level, every other insertion
+/// has to wait until this one finishes and acquire the new max level.
             std::unique_lock <std::mutex> templock(global);
             int maxlevelcopy = maxlevel_;
             if (curlevel <= maxlevelcopy)
@@ -1143,7 +1143,7 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                         throw std::runtime_error("Level error");
 
                     std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates = searchBaseLayer(
-                            currObj, data_point, level);
+                            currObj,0, data_point, level);
                     if (epDeleted) {
                         top_candidates.emplace(fstdistfunc_(data_point, getDataByInternalId(enterpoint_copy), dist_func_param_), enterpoint_copy);
                         if (top_candidates.size() > ef_construction_)
@@ -1168,16 +1168,149 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
             return cur_c;
         };
 
+
+        void traverse_and_connection(std::vector<tableint>& cur_c_list,const void* data_point,size_t* label,size_t z,size_t dim){
+            tableint cur_c = cur_c_list[z];
+            if(cur_c==enterpoint_node_){
+                return;
+            }
+            int curlevel = element_levels_[cur_c];
+            tableint currObj = enterpoint_node_;
+            tableint enterpoint_copy = enterpoint_node_;
+            const dist_t* current_point = reinterpret_cast<const dist_t*>(data_point)+z*dim;
+            const dist_t x_norm = candidate_norm_by_ids[cur_c];
+
+            std::unique_lock <std::mutex> lock_el_update(link_list_update_locks_[(cur_c & (max_update_element_locks - 1))]);
+            std::unique_lock <std::mutex> lock_el(link_list_locks_[cur_c]);
+
+            if (curlevel < maxlevel_) {
+
+                dist_t curdist = fstdistfunc_(current_point, getDataByInternalId(currObj), dist_func_param_);
+                for (int level = maxlevel_; level > curlevel; level--) {
+
+
+                    bool changed = true;
+                    while (changed) {
+                        changed = false;
+                        unsigned int *data;
+                        std::unique_lock <std::mutex> lock(link_list_locks_[currObj]);
+                        data = get_linklist(currObj,level);
+                        int size = getListCount(data);
+
+                        tableint *datal = (tableint *) (data + 1);
+                        for (int i = 0; i < size; i++) {
+                            tableint cand = datal[i];
+                            if (cand < 0 || cand > max_elements_)
+                                throw std::runtime_error("cand error");
+                            dist_t d;
+                            if (candidate_norm_)
+                                fast_l2(d,current_point,cand,dist_func_param_)
+                            else
+                                d = fstdistfunc_(current_point, getDataByInternalId(cand), dist_func_param_);
+                            if (d < curdist) {
+                                curdist = d;
+                                currObj = cand;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            bool epDeleted = isMarkedDeleted(enterpoint_copy);
+            for (int level = std::min(curlevel, maxlevel_); level >= 0; level--) {
+                if (level > maxlevel_ || level < 0)  // possible?
+                    throw std::runtime_error("Level error");
+
+                std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates = searchBaseLayer(
+                        currObj,x_norm, current_point, level);
+                if (epDeleted) {
+                    top_candidates.emplace(fstdistfunc_(current_point, getDataByInternalId(enterpoint_copy), dist_func_param_), enterpoint_copy);
+                    if (top_candidates.size() > ef_construction_)
+                        top_candidates.pop();
+                }
+                currObj = mutuallyConnectNewElement(current_point, cur_c, top_candidates, level, false);
+            }
+        }
+
+
+        /// It's not reasonable to batch add a bunch of points which has updates interleaved within, so we won't
+        /// updates points in batchAddPoints. if an reused label is found, we throw an error.
+        void batchAddPoints(const void *data_point, labeltype* label,size_t nq, int level, int num_thread) {
+            size_t dim = *(size_t *)dist_func_param_;
+            std::vector<tableint> cur_c_list(nq);
+            std::vector<std::vector<int>> levels;
+            {
+                // Checking if the element with the same label already exists
+                // if so, updating it *instead* of creating a new element.
+                std::unique_lock <std::mutex> templock_curr(cur_element_count_guard_);
+                if(cur_element_count+nq>max_elements_){
+                    throw std::runtime_error("The number of elements exceeds the specified limit");
+                }
+                for(size_t z=0;z<nq;z++){
+                    tableint cur_c = 0;
+                    const dist_t* current_point = reinterpret_cast<const dist_t*>(data_point)+z*dim;
+                    auto search = label_lookup_.find(label[z]);
+                    if (search != label_lookup_.end()) {
+                        throw std::runtime_error("Can't update points inside batch insertion");
+                    }
+
+                    cur_c = cur_element_count;
+                    cur_element_count++;
+                    //label_lookup_[label[z]] = cur_c;
+                    cur_c_list[z]=cur_c;
+                }
+            }
+
+            /// can parallel
+#pragma omp parallel for schedule (static) num_threads(num_thread)
+            for(int z=0;z<nq;z++){
+                tableint cur_c = cur_c_list[z];
+                int curlevel = getRandomLevel(mult_);
+                const dist_t* current_point = reinterpret_cast<const dist_t*>(data_point)+z*dim;
+                element_levels_[cur_c] = curlevel;
+                std::unique_lock <std::mutex> templock(global);
+                if (curlevel > maxlevel_) {
+                    enterpoint_node_ = cur_c;
+                    maxlevel_ = curlevel;
+                }
+                dist_t norm;
+                if(candidate_norm_)
+                {
+                    norm = fstdistfunc_2(current_point,current_point,dist_func_param_);
+                    updateNorm(norm,cur_c);
+                }
+                memset(data_level0_memory_ + cur_c * size_data_per_element_ + offsetLevel0_, 0, size_data_per_element_);
+
+                // Initialisation of the data and label
+                memcpy(getExternalLabeLp(cur_c), &label[z], sizeof(labeltype));
+                memcpy(getDataByInternalId(cur_c), current_point, data_size_);
+
+                if (curlevel) {
+                    linkLists_[cur_c] = (char *) malloc(size_links_per_element_ * curlevel + 1);
+                    if (linkLists_[cur_c] == nullptr)
+                        throw std::runtime_error("Not enough memory: addPoint failed to allocate linklist");
+                    memset(linkLists_[cur_c], 0, size_links_per_element_ * curlevel + 1);
+                }
+            }
+
+            traverse_and_connection(cur_c_list,data_point,label,enterpoint_node_,dim);
+#pragma omp parallel for schedule (dynamic) num_threads(num_thread)
+            for(tableint z=0;z<cur_c_list.size();z++){
+                    traverse_and_connection(cur_c_list,data_point,label,z,dim);
+                }
+        };
+
         std::vector<std::priority_queue<std::pair<dist_t, labeltype >>>
-        searchKnn(const void *query_data, size_t k, size_t nq) const {
+        searchKnn(const void *query_data, size_t k, size_t nq, size_t num_thread) const {
             std::vector<std::priority_queue<std::pair<dist_t, labeltype >>> result;
             result.resize(nq);
             if (cur_element_count == 0) return result;
             size_t dim = *(size_t *)dist_func_param_;
 
             std::vector<tableint>currObjs(nq,enterpoint_node_);
-            std::vector<float>currdis(nq);
-            std::vector<float>all_x_norm(nq);
+            std::vector<dist_t>currdis(nq);
+            std::vector<dist_t>all_x_norm(nq);
             for(size_t z=0;z<nq;z++) {
                 const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
                 /// TODO the casting here is not very ideal, try to deal with it later.
@@ -1192,11 +1325,12 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                 currdis[z]=dist;
             }
             for (int level = maxlevel_; level > 0; level--) {
-#pragma omp parallel for
+
+#pragma omp parallel for schedule(static) num_threads(num_thread)
                 for(size_t z=0;z<nq;z++) {
                     const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
-                    const float x_norm = all_x_norm[z];
-                    float dist = currdis[z];
+                    const dist_t x_norm = all_x_norm[z];
+                    dist_t dist = currdis[z];
                     tableint currObj = currObjs[z];
                     bool changed = true;
                     while (changed) {
@@ -1215,7 +1349,7 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                                 throw std::runtime_error("cand error");
                             dist_t d;
                             if (candidate_norm_) {
-                                fast_l2(d, current_x, cand, dist_func_param_)
+                                fast_l2(d, current_x, cand, dist_func_param_);
                             } else
                                 d = fstdistfunc_(current_x, getDataByInternalId(cand), dist_func_param_);
                             if (d < dist) {
@@ -1234,10 +1368,10 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                 std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
                 if (num_deleted_) {
                     top_candidates = searchBaseLayerST<true, true>(
-                            currObjs[z], query_data, std::max(ef_, k));
+                            currObjs[z],all_x_norm[z], query_data, std::max(ef_, k));
                 } else {
                     top_candidates = searchBaseLayerST<false, true>(
-                            currObjs[z], query_data, std::max(ef_, k));
+                            currObjs[z],all_x_norm[z], query_data, std::max(ef_, k));
                 }
 
                 while (top_candidates.size() > k) {

@@ -9,7 +9,7 @@
 #include <vector>
 #include <iostream>
 #include <sys/time.h>
-//#include <omp.h>
+#include <omp.h>
 namespace {
 
     using idx_t = hnswlib::labeltype;
@@ -21,13 +21,14 @@ namespace {
     }
 
     void test() {
-        //omp_set_num_threads(16);
+        omp_set_num_threads(16);
         int d = 128;
-        idx_t n = 10000;
+        idx_t n = 1000000;
         idx_t nq = 10000;
         size_t k = 50;
 
         std::vector<float> data(n * d);
+        std::vector<size_t> labels(n*d);
         std::vector<float> query(nq * d);
 
         std::mt19937 rng;
@@ -36,7 +37,9 @@ namespace {
 
         for (idx_t i = 0; i < n * d; ++i) {
             data[i] = distrib(rng);
+            labels[i]=i;
         }
+
         for (idx_t i = 0; i < nq * d; ++i) {
             query[i] = distrib(rng);
         }
@@ -44,10 +47,18 @@ namespace {
 
         hnswlib::L2Spacefast spacefast(d);
         hnswlib::HierarchicalNSW<float> *alg_l2_fast = new hnswlib::HierarchicalNSW<float>(&spacefast, n, 32);
-#pragma omp parallel for
-        for (size_t i = 0; i < n; ++i) {
-            alg_l2_fast->addPoint(data.data() + d * i, i);
-        }
+//        auto time0 = elapsed();
+//#pragma omp parallel for
+//        for (size_t i = 0; i < n; ++i) {
+//            alg_l2_fast->addPoint(data.data() + d * i, i);
+//        }
+//        auto time1 = elapsed();
+//        std::cout<<"time taken to create index:"<<(time1-time0);
+        auto time0 = elapsed();
+        alg_l2_fast->batchAddPoints(data.data(),labels.data(),n,-1,16);
+        auto time1 = elapsed();
+        std::cout<<"time taken to create index:"<<(time1-time0);
+
         alg_l2_fast->saveIndex("index.h");
     }
 

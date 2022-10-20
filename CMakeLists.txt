@@ -22,6 +22,9 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     add_executable(searchKnnCloserFirst_test examples/searchKnnCloserFirst_test.cpp)
     target_link_libraries(searchKnnCloserFirst_test hnswlib)
 
+    add_executable(searchKnnCloserFirst_old examples/searchKnnCloserFirst_old.cpp)
+    target_link_libraries(searchKnnCloserFirst_old hnswlib)
+
     add_executable(main main.cpp sift_1b.cpp)
     target_link_libraries(main hnswlib)
 
