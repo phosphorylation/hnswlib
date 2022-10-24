@@ -572,12 +572,12 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
             }
 
             if (num_deleted_) {
-                std::priority_queue<std::pair<dist_t, tableint  >> top_candidates1=searchBaseLayerST<true>(currObj, query_data,
+                std::priority_queue<std::pair<dist_t, tableint  >> top_candidates1=searchBaseLayerST<true>(currObj,0, query_data,
                                                                                                            ef_);
                 top_candidates.swap(top_candidates1);
             }
             else{
-                std::priority_queue<std::pair<dist_t, tableint  >> top_candidates1=searchBaseLayerST<false>(currObj, query_data,
+                std::priority_queue<std::pair<dist_t, tableint  >> top_candidates1=searchBaseLayerST<false>(currObj,0, query_data,
                                                                                                             ef_);
                 top_candidates.swap(top_candidates1);
             }
@@ -1080,9 +1080,6 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
 
             element_levels_[cur_c] = curlevel;
 
-/// TODO this global lock can chock parallel insertion performance
-/// if any insertion is assigned a level >max level, every other insertion
-/// has to wait until this one finishes and acquire the new max level.
             std::unique_lock <std::mutex> templock(global);
             int maxlevelcopy = maxlevel_;
             if (curlevel <= maxlevelcopy)
@@ -1326,7 +1323,7 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
             }
             for (int level = maxlevel_; level > 0; level--) {
 
-#pragma omp parallel for schedule(static) num_threads(num_thread)
+#pragma omp parallel for schedule(static) if(num_thread>1) num_threads(num_thread)
                 for(size_t z=0;z<nq;z++) {
                     const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
                     const dist_t x_norm = all_x_norm[z];
@@ -1363,7 +1360,7 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                     currdis[z]=dist;
                 }
             }
-#pragma omp parallel for
+#pragma omp parallel for if(num_thread>1) num_threads(num_thread)
             for(int z=0;z<nq;z++){
                 std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
                 if (num_deleted_) {

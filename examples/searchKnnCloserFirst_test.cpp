@@ -10,7 +10,7 @@
 #include <vector>
 #include <iostream>
 #include <sys/time.h>
-#include <omp.h>
+//#include <omp.h>
 namespace
 {
 
@@ -23,7 +23,7 @@ double elapsed() {
     }
 
 void test() {
-    omp_set_num_threads(16);
+    //omp_set_num_threads(16);
     int d = 128;
     idx_t n = 1000000;
     idx_t nq = 10000;
@@ -42,13 +42,16 @@ void test() {
 
     hnswlib::L2Space spacefast(d);
     hnswlib::HierarchicalNSW<float> *alg_l2_fast = new hnswlib::HierarchicalNSW<float>(&spacefast, n);
-    alg_l2_fast->ef_=100;
     alg_l2_fast->loadIndex("index.h",&spacefast,n);
+    alg_l2_fast->ef_=200;
     {
         auto time0 = elapsed();
-        auto res = alg_l2_fast->searchKnnCloserFirst(query.data(), k,nq,16);
+        auto res = alg_l2_fast->searchKnnCloserFirst(query.data(), k,nq,1);
         auto time1 = elapsed();
         std::cout<<"time taken for l2fast:"<<(time1-time0);
+        for(int i=0;i<k;i++){
+            std::cout<<"\n"<<res[0][i].first<<" "<<res[0][i].second;
+        }
     }
 
     delete alg_l2_fast;
