@@ -21,7 +21,7 @@ namespace {
     }
 
     void test() {
-        omp_set_num_threads(16);
+        omp_set_num_threads(8);
         int d = 128;
         idx_t n = 1000000;
         idx_t nq = 10000;
@@ -47,19 +47,19 @@ namespace {
 
         hnswlib::L2Spacefast spacefast(d);
         hnswlib::HierarchicalNSW<float> *alg_l2_fast = new hnswlib::HierarchicalNSW<float>(&spacefast, n, 32);
-//        auto time0 = elapsed();
-//#pragma omp parallel for
-//        for (size_t i = 0; i < n; ++i) {
-//            alg_l2_fast->addPoint(data.data() + d * i, i);
-//        }
-//        auto time1 = elapsed();
-//        std::cout<<"time taken to create index:"<<(time1-time0);
         auto time0 = elapsed();
-        alg_l2_fast->batchAddPoints(data.data(),labels.data(),n,-1,16);
+#pragma omp parallel for
+        for (size_t i = 0; i < n; ++i) {
+            alg_l2_fast->addPoint(data.data() + d * i, i);
+        }
         auto time1 = elapsed();
         std::cout<<"time taken to create index:"<<(time1-time0);
+//        auto time0 = elapsed();
+//        alg_l2_fast->batchAddPoints(data.data(),labels.data(),n,-1,16);
+//        auto time1 = elapsed();
+//        std::cout<<"time taken to create index:"<<(time1-time0);
 
-        alg_l2_fast->saveIndex("index.h");
+        alg_l2_fast->saveIndex("index_1M_32.h");
     }
 
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "hnswlib.h"
+#include "space_ip.h"
 
 namespace hnswlib {
     static float
@@ -296,7 +297,7 @@ namespace hnswlib {
 
     // Favor using AVX if available.
     static float
-    L2SqrSIMD16ExtAVX(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    L2SqrSIMD16ExtAVX(const  void * __restrict__ pVect1v, const void * __restrict__ pVect2v, const void * __restrict__ qty_ptr) {
         float *pVect1 = (float *) pVect1v;
         float *pVect2 = (float *) pVect2v;
         size_t qty = *((size_t *) qty_ptr);
@@ -326,6 +327,83 @@ namespace hnswlib {
 
         _mm256_store_ps(TmpRes, sum);
         return TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3] + TmpRes[4] + TmpRes[5] + TmpRes[6] + TmpRes[7];
+    }
+
+    static float L2SqrAVX(const void* x_v, const void* y_v, const void* qty_ptr) {
+        float *x = (float *) x_v;
+        float *y = (float *) y_v;
+        __m256 sum1 = _mm256_setzero_ps(), sum2 = _mm256_setzero_ps();
+        size_t d = *((size_t *) qty_ptr);
+        const float* end = x + d;
+        while (x < end) {
+            auto xx1 = _mm256_loadu_ps(x);
+            x += 8;
+            auto yy1 = _mm256_loadu_ps(y);
+            y += 8;
+            auto t1 = _mm256_sub_ps(xx1, yy1);
+            sum1 = _mm256_fmadd_ps(t1, t1, sum1);
+            auto xx2 = _mm256_loadu_ps(x);
+            x += 8;
+            auto yy2 = _mm256_loadu_ps(y);
+            y += 8;
+            auto t2 = _mm256_sub_ps(xx2, yy2);
+            sum2 = _mm256_fmadd_ps(t2,t2, sum2);
+        }
+        sum1 = _mm256_add_ps(sum1, sum2);
+        auto sumh =
+                _mm_add_ps(_mm256_castps256_ps128(sum1), _mm256_extractf128_ps(sum1, 1));
+        auto tmp1 = _mm_add_ps(sumh, _mm_movehl_ps(sumh, sumh));
+        auto tmp2 = _mm_add_ps(tmp1, _mm_movehdup_ps(tmp1));
+        return _mm_cvtss_f32(tmp2);
+    }
+
+
+    static float fvec_L2sqr_faiss_prefetch(const void* __restrict__ x_v, const void* __restrict__ y_v,const void * __restrict__ qty_ptr) {
+        float *x = (float *) x_v;
+        float *y = (float *) y_v;
+        __m256 msum1 = _mm256_setzero_ps();
+        size_t d = *((size_t *) qty_ptr);
+        __m256 mx;
+        __m256 my;
+        while (d >= 16) {
+            mx = _mm256_loadu_ps(x);
+            x += 8;
+            my = _mm256_loadu_ps(y);
+            y += 8;
+            const __m256 a_m_b1 = _mm256_sub_ps(mx, my);
+            msum1 = _mm256_add_ps(msum1, _mm256_mul_ps(a_m_b1, a_m_b1));
+            mx = _mm256_loadu_ps(x);
+            x += 8;
+            my = _mm256_loadu_ps(y);
+            y += 8;
+            const __m256 a_m_b2 = _mm256_sub_ps(mx, my);
+            msum1 = _mm256_add_ps(msum1, _mm256_mul_ps(a_m_b2, a_m_b2));
+            d -= 16;
+        }
+
+        __m128 msum2 = _mm256_extractf128_ps(msum1, 1);
+        msum2 = _mm_add_ps(msum2, _mm256_extractf128_ps(msum1, 0));
+
+        if (d >= 4) {
+            __m128 mx = _mm_loadu_ps(x);
+            x += 4;
+            __m128 my = _mm_loadu_ps(y);
+            y += 4;
+            const __m128 a_m_b1 = _mm_sub_ps(mx, my);
+            msum2 = _mm_add_ps(msum2, _mm_mul_ps(a_m_b1, a_m_b1));
+            d -= 4;
+        }
+
+        if (d > 0) {
+            __m128 mx = masked_read(d, x);
+            __m128 my = masked_read(d, y);
+            __m128 a_m_b1 = _mm_sub_ps(mx, my);
+            msum2 = _mm_add_ps(msum2, _mm_mul_ps(a_m_b1, a_m_b1));
+        }
+
+        msum2 = _mm_hadd_ps(msum2, msum2);
+        msum2 = _mm_hadd_ps(msum2, msum2);
+        return _mm_cvtss_f32(msum2);
     }
 
 #endif
@@ -576,7 +654,17 @@ namespace hnswlib {
 
             fstdistfunc_ = L2Sqr;
 
-#if defined(USE_SSE) || defined(USE_AVX)
+#if defined(USE_SSE) || defined(USE_AVX) || defined(USE_AVX512)
+#if defined(USE_AVX512)
+            if (AVX512Capable())
+                L2SqrSIMD16Ext = L2SqrSIMD16ExtAVX512;
+            else if (AVXCapable())
+                L2SqrSIMD16Ext = L2SqrSIMD16ExtAVX;
+#elif defined(USE_AVX)
+            if (AVXCapable())
+                L2SqrSIMD16Ext = L2SqrAVX;
+#endif
+
             if (dim % 16 == 0)
                 fstdistfunc_ = L2SqrSIMD16Ext;
             else if (dim % 4 == 0)

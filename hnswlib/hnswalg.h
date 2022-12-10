@@ -8,6 +8,9 @@
 #include <assert.h>
 #include <unordered_set>
 #include <list>
+#include <atomic>
+#include "prio_queue.h"
+#include <omp.h>
 
 namespace hnswlib {
     typedef unsigned int tableint;
@@ -27,7 +30,6 @@ namespace hnswlib {
         HierarchicalNSW(SpaceInterface<dist_t> *s, size_t max_elements, size_t M = 16, size_t ef_construction = 200, size_t random_seed = 100) :
                 link_list_locks_(max_elements), link_list_update_locks_(max_update_element_locks), element_levels_(max_elements) {
             max_elements_ = max_elements;
-
             num_deleted_ = 0;
             data_size_ = s->get_data_size();
             fstdistfunc_ = s->get_dist_func();
@@ -72,10 +74,11 @@ namespace hnswlib {
             revSize_ = 1.0 / mult_;
         }
 
-        struct CompareByFirst {
+
+        struct CompareByFirst_greater {
             constexpr bool operator()(std::pair<dist_t, tableint> const &a,
                                       std::pair<dist_t, tableint> const &b) const noexcept {
-                return a.first < b.first;
+                return a.first > b.first;
             }
         };
 
@@ -104,7 +107,6 @@ namespace hnswlib {
 
         double mult_, revSize_;
         int maxlevel_;
-
 
         VisitedListPool *visited_list_pool_;
         std::mutex cur_element_count_guard_;
@@ -259,37 +261,39 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
         mutable std::atomic<long> metric_hops;
 
         template <bool has_deletions, bool collect_metrics=false>
-        std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
-        searchBaseLayerST(tableint ep_id,dist_t x_norm, const void *data_point, size_t ef) const {
-            VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+        rollbear::prio_queue<32,dist_t, tableint,std::greater<dist_t>>*
+        searchBaseLayerST(tableint ep_id, const void *data_point, size_t ef,VisitedList* vl) const {
             vl_type *visited_array = vl->mass;
             vl_type visited_array_tag = vl->curV;
+            //std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+            //std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
+            rollbear::prio_queue<32,dist_t, tableint,std::greater<dist_t>>* top_candidates =
+                    new rollbear::prio_queue<32,dist_t, tableint,std::greater<dist_t>>();
+            rollbear::prio_queue<32,dist_t, tableint,std::greater<dist_t>> candidate_set;
 
-            std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
-            std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
 
             dist_t lowerBound;
-            if (!has_deletions || !isMarkedDeleted(ep_id)) {
+            if (__builtin_expect(!has_deletions || !isMarkedDeleted(ep_id),1)) {
                 dist_t dist;
-                if(candidate_norm_)
-                    fast_l2(dist,data_point,ep_id,dist_func_param_)
-                else
+//                if(candidate_norm_)
+//                    fast_l2(dist,data_point,ep_id,dist_func_param_)
+//                else
                     dist = fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
                 lowerBound = dist;
-                top_candidates.emplace(dist, ep_id);
-                candidate_set.emplace(-dist, ep_id);
+                top_candidates->push(dist, ep_id);
+                candidate_set.push(-dist, ep_id);
             } else {
                 lowerBound = std::numeric_limits<dist_t>::max();
-                candidate_set.emplace(-lowerBound, ep_id);
+                candidate_set.push(-lowerBound, ep_id);
             }
 
             visited_array[ep_id] = visited_array_tag;
+            size_t d = *(size_t*)dist_func_param_;
 
             while (!candidate_set.empty()) {
-
                 std::pair<dist_t, tableint> current_node_pair = candidate_set.top();
 
-                if ((-current_node_pair.first) > lowerBound && (top_candidates.size() == ef || has_deletions == false)) {
+                if (__builtin_expect((-current_node_pair.first) > lowerBound && (top_candidates->size() == ef || has_deletions == false),0)) {
                     break;
                 }
                 candidate_set.pop();
@@ -309,52 +313,106 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                 _mm_prefetch(data_level0_memory_ + (*(data + 1)) * size_data_per_element_ + offsetData_, _MM_HINT_T0);
                 _mm_prefetch((char *) (data + 2), _MM_HINT_T0);
 #endif
-
                 for (size_t j = 1; j <= size; j++) {
                     int candidate_id = *(data + j);
+                    int next_candidate = *(data + j+1);
 //                    if (candidate_id == 0) continue;
 #ifdef USE_SSE
-                    _mm_prefetch((char *) (visited_array + *(data + j + 1)), _MM_HINT_T0);
-                    _mm_prefetch(data_level0_memory_ + (*(data + j + 1)) * size_data_per_element_ + offsetData_,
+                    _mm_prefetch((char *) (visited_array + next_candidate), _MM_HINT_T0);
+                    int cache_line=0x0;
+                    while(cache_line<d*sizeof(dist_t))
+                    {
+                    _mm_prefetch(data_level0_memory_ + (*(data + j + 1)) * size_data_per_element_ + offsetData_+cache_line,
                                  _MM_HINT_T0);////////////
+                    _mm_prefetch(data_level0_memory_ + (*(data + j + 1)) * size_data_per_element_ + offsetData_+cache_line+0x40,
+                                 _MM_HINT_T0);////////////
+                    cache_line+=0x80;
+                    }
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_,
+//                                 _MM_HINT_T0);////////////
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_+0x40,
+//                                 _MM_HINT_T0);////////////
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_+0x80,
+//                                 _MM_HINT_T0);////////////
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_+0xc0,
+//                                 _MM_HINT_T0);////////////
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_+0x100,
+//                                 _MM_HINT_T0);////////////
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_+0x140,
+//                                 _MM_HINT_T0);////////////
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_+0x180,
+//                                 _MM_HINT_T0);////////////
+//                    _mm_prefetch(data_level0_memory_ + next_candidate * size_data_per_element_ + offsetData_+0x1c0,
+//                                 _MM_HINT_T0);////////////
 #endif
-                    if (!(visited_array[candidate_id] == visited_array_tag)) {
+                    if (__builtin_expect(!(visited_array[candidate_id] == visited_array_tag),1)) {
 
                         visited_array[candidate_id] = visited_array_tag;
 
                         dist_t dist;
-                        if(candidate_norm_)
-                            fast_l2(dist,data_point,candidate_id,dist_func_param_)
-                        else
-                        {
+//                        if(candidate_norm_)
+//                            fast_l2(dist,data_point,candidate_id,dist_func_param_)
+//                        else
+//                        {
                             char *currObj1 = (getDataByInternalId(candidate_id));
                             dist = fstdistfunc_(data_point, currObj1, dist_func_param_);
-                        }
+//                        }
 
-                        if (top_candidates.size() < ef || lowerBound > dist) {
-                            candidate_set.emplace(-dist, candidate_id);
-#ifdef USE_SSE
-                            _mm_prefetch(data_level0_memory_ + candidate_set.top().second * size_data_per_element_ +
-                                         offsetLevel0_,///////////
-                                         _MM_HINT_T0);////////////////////////
-#endif
+                        if (__builtin_expect(top_candidates->size() < ef || lowerBound > dist,1)) {
+                            candidate_set.push(-dist, candidate_id);
 
-                            if (!has_deletions || !isMarkedDeleted(candidate_id))
-                                top_candidates.emplace(dist, candidate_id);
+                            if (__builtin_expect(!has_deletions || !isMarkedDeleted(candidate_id),1))
+                                top_candidates->push(dist, candidate_id);
 
-                            if (top_candidates.size() > ef)
-                                top_candidates.pop();
+                            if (top_candidates->size() > ef)
+                                top_candidates->pop();
 
-                            if (!top_candidates.empty())
-                                lowerBound = top_candidates.top().first;
+                            if (!top_candidates->empty())
+                                lowerBound = top_candidates->top().first;
                         }
                     }
                 }
-            }
+#ifdef USE_SSE
+                int cache_line = 0x0;
+                size_t next = candidate_set.top().second;
+                while(cache_line<d*sizeof(dist_t))
+                {
+                    _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ + offsetData_+cache_line,
+                                 _MM_HINT_T0);////////////
+                    _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ + offsetData_+cache_line+0x40,
+                                 _MM_HINT_T0);////////////
+                    cache_line+=0x80;
+                }
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_,///////////
+//                             _MM_HINT_T0);////////////////////////
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_+0x40,///////////
+//                             _MM_HINT_T0);////////////////////////
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_+0x80,///////////
+//                             _MM_HINT_T0);////////////////////////
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_+0xc0,///////////
+//                             _MM_HINT_T0);////////////////////////
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_+0x100,///////////
+//                             _MM_HINT_T0);////////////////////////
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_+0x140,///////////
+//                             _MM_HINT_T0);////////////////////////
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_+0x180,///////////
+//                             _MM_HINT_T0);////////////////////////
+//                _mm_prefetch(data_level0_memory_ + next * size_data_per_element_ +
+//                             offsetLevel0_+0x1c0,///////////
+//                             _MM_HINT_T0);////////////////////////
 
-            visited_list_pool_->releaseVisitedList(vl);
+#endif
+            }
             return top_candidates;
         }
+
 
         void getNeighborsByHeuristic2(
                 std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> &top_candidates,
@@ -1298,35 +1356,37 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                 }
         };
 
-        std::vector<std::priority_queue<std::pair<dist_t, labeltype >>>
+        std::vector<rollbear::prio_queue<32,dist_t, tableint,std::greater<dist_t>>>
         searchKnn(const void *query_data, size_t k, size_t nq, size_t num_thread) const {
-            std::vector<std::priority_queue<std::pair<dist_t, labeltype >>> result;
+            std::vector<rollbear::prio_queue<32,dist_t, tableint,std::greater<dist_t>>> result;
             result.resize(nq);
             if (cur_element_count == 0) return result;
             size_t dim = *(size_t *)dist_func_param_;
 
             std::vector<tableint>currObjs(nq,enterpoint_node_);
             std::vector<dist_t>currdis(nq);
-            std::vector<dist_t>all_x_norm(nq);
+            //std::vector<dist_t>all_x_norm(nq);
+            std::vector<VisitedList*> visited_lists(num_thread);
+#pragma omp parallel for schedule(static) if(num_thread>1) num_threads(num_thread)
             for(size_t z=0;z<nq;z++) {
                 const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
                 /// TODO the casting here is not very ideal, try to deal with it later.
                 dist_t x_norm = 0;
                 dist_t dist;
-                if (candidate_norm_) {
-                    x_norm = fstdistfunc_2(current_x, current_x, dist_func_param_);
-                    all_x_norm[z]=x_norm;
-                    fast_l2(dist, current_x, enterpoint_node_, dist_func_param_)
-                } else
+//                if (candidate_norm_) {
+//                    x_norm = fstdistfunc_2(current_x, current_x, dist_func_param_);
+//                    all_x_norm[z]=x_norm;
+//                    fast_l2(dist, current_x, enterpoint_node_, dist_func_param_)
+//                } else
                     dist = fstdistfunc_(current_x, getDataByInternalId(enterpoint_node_), dist_func_param_);
                 currdis[z]=dist;
             }
             for (int level = maxlevel_; level > 0; level--) {
 
-#pragma omp parallel for schedule(static) if(num_thread>1) num_threads(num_thread)
+#pragma omp parallel for schedule(static, nq/num_thread) if(num_thread>1) num_threads(num_thread) proc_bind(close)
                 for(size_t z=0;z<nq;z++) {
                     const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
-                    const dist_t x_norm = all_x_norm[z];
+                    //const dist_t x_norm = all_x_norm[z];
                     dist_t dist = currdis[z];
                     tableint currObj = currObjs[z];
                     bool changed = true;
@@ -1345,9 +1405,9 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                             if (cand < 0 || cand > max_elements_)
                                 throw std::runtime_error("cand error");
                             dist_t d;
-                            if (candidate_norm_) {
-                                fast_l2(d, current_x, cand, dist_func_param_);
-                            } else
+//                            if (candidate_norm_) {
+//                                fast_l2(d, current_x, cand, dist_func_param_);
+//                            } else
                                 d = fstdistfunc_(current_x, getDataByInternalId(cand), dist_func_param_);
                             if (d < dist) {
                                 dist = d;
@@ -1360,25 +1420,34 @@ dist = x_norm+candidate_norm_by_ids[ep_id]-2*dist;                              
                     currdis[z]=dist;
                 }
             }
-#pragma omp parallel for if(num_thread>1) num_threads(num_thread)
-            for(int z=0;z<nq;z++){
-                std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+            for(int i=0;i<num_thread;i++){
+                visited_lists[i]=new VisitedList(max_elements_);
+            }
+#pragma omp parallel for schedule(dynamic) if(num_thread>1) num_threads(num_thread) proc_bind(close)
+            for(int z=0;z<nq;z++) {
+                int thread_no = omp_get_thread_num();
+                const float *current_x = reinterpret_cast<const float *>(query_data) + z * dim;
+                rollbear::prio_queue<32,dist_t, tableint,std::greater<dist_t>>* top_candidates;
+                visited_lists[thread_no]->reset();
                 if (num_deleted_) {
                     top_candidates = searchBaseLayerST<true, true>(
-                            currObjs[z],all_x_norm[z], query_data, std::max(ef_, k));
+                            currObjs[z],  current_x, std::max(ef_, k), visited_lists[thread_no]);
                 } else {
                     top_candidates = searchBaseLayerST<false, true>(
-                            currObjs[z],all_x_norm[z], query_data, std::max(ef_, k));
+                            currObjs[z], current_x, std::max(ef_, k), visited_lists[thread_no]);
                 }
-
-                while (top_candidates.size() > k) {
-                    top_candidates.pop();
+                while (top_candidates->size() > k) {
+                    top_candidates->pop();
                 }
-                while (top_candidates.size() > 0) {
-                    std::pair<dist_t, tableint> rez = top_candidates.top();
-                    result[z].push(std::pair<dist_t, labeltype>(rez.first, getExternalLabel(rez.second)));
-                    top_candidates.pop();
+                while (top_candidates->size() > 0) {
+                    auto rez = top_candidates->top();
+                    result[z].push(rez.first, getExternalLabel(rez.second));
+                    top_candidates->pop();
                 }
+                delete top_candidates;
+            }
+            for(int i=0;i<num_thread;i++){
+                delete(visited_lists[i]);
             }
             return result;
         };

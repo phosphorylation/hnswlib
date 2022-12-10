@@ -26,6 +26,8 @@ __int64 xgetbv(unsigned int x) {
 #include <x86intrin.h>
 #include <cpuid.h>
 #include <stdint.h>
+#include "prio_queue.h"
+
 void cpuid(int32_t cpuInfo[4], int32_t eax, int32_t ecx) {
     __cpuid_count(eax, ecx, cpuInfo[0], cpuInfo[1], cpuInfo[2], cpuInfo[3]);
 }
@@ -155,12 +157,19 @@ namespace hnswlib {
         virtual ~SpaceInterface() {}
     };
 
+    struct CompareByFirst {
+        constexpr bool operator()(std::pair<float, labeltype> const &a,
+                                  std::pair<float, labeltype> const &b) const noexcept {
+            return a.first < b.first;
+        }
+    };
+
     template<typename dist_t>
     class AlgorithmInterface {
     public:
         virtual void addPoint(const void *datapoint, labeltype label)=0;
         virtual void batchAddPoints(const void *data_point, labeltype* label,size_t nq, int level);
-        virtual std::vector<std::priority_queue<std::pair<dist_t, labeltype >>>
+        virtual  std::vector<rollbear::prio_queue<32,dist_t, unsigned int,std::greater<dist_t>>>
         searchKnn(const void *query_data, size_t k, size_t nq, size_t num_thread=1) const = 0;
 
         // Return k nearest neighbor in the order of closer fist
@@ -182,14 +191,14 @@ namespace hnswlib {
         {
             for(int i=0;i<nq;i++){
                 size_t sz = ret[i].size();
+                int j=sz;
                 result[i].resize(sz);
                 while (!ret[i].empty()) {
-                    result[i][--sz] = ret[i].top();
+                    result[i][--j] = ret[i].top();
                     ret[i].pop();
                 }
             }
         }
-
         return result;
     }
 

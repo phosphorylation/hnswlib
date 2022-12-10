@@ -142,7 +142,6 @@ namespace hnswlib {
 #endif
 
 
-#if defined(USE_AVX512)
 
     static float
     InnerProductSIMD16ExtAVX512(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
@@ -179,7 +178,6 @@ namespace hnswlib {
         return 1.0f - InnerProductSIMD16ExtAVX512(pVect1v, pVect2v, qty_ptr);
     }
 
-#endif
 
 #if defined(USE_AVX)
 
@@ -217,6 +215,104 @@ namespace hnswlib {
         float sum = TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3] + TmpRes[4] + TmpRes[5] + TmpRes[6] + TmpRes[7];
 
         return sum;
+    }
+
+#define ALIGNED(x) __attribute__((aligned(x)))
+
+    static inline __m128 masked_read(int d, const float* x) {
+        ALIGNED(16) float buf[4] = {0, 0, 0, 0};
+        switch (d) {
+            case 3:
+                buf[2] = x[2];
+            case 2:
+                buf[1] = x[1];
+            case 1:
+                buf[0] = x[0];
+        }
+        return _mm_load_ps(buf);
+        // cannot use AVX2 _mm_mask_set1_epi32
+    }
+
+    static inline __m256 masked_read_8(int d, const float* x) {
+        if (d < 4) {
+            __m256 res = _mm256_setzero_ps();
+            res = _mm256_insertf128_ps(res, masked_read(d, x), 0);
+            return res;
+        } else {
+            __m256 res = _mm256_setzero_ps();
+            res = _mm256_insertf128_ps(res, _mm_loadu_ps(x), 0);
+            res = _mm256_insertf128_ps(res, masked_read(d - 4, x + 4), 1);
+            return res;
+        }
+    }
+
+    static float fvec_inner_product_faiss(const float* x, const float* y, size_t d) {
+        __m256 msum1 = _mm256_setzero_ps();
+
+        while (d >= 8) {
+            __m256 mx = _mm256_loadu_ps(x);
+            x += 8;
+            __m256 my = _mm256_loadu_ps(y);
+            y += 8;
+            msum1 = _mm256_add_ps(msum1, _mm256_mul_ps(mx, my));
+            d -= 8;
+        }
+
+        __m128 msum2 = _mm256_extractf128_ps(msum1, 1);
+        msum2 = _mm_add_ps(msum2, _mm256_extractf128_ps(msum1, 0));
+
+        if (d >= 4) {
+            __m128 mx = _mm_loadu_ps(x);
+            x += 4;
+            __m128 my = _mm_loadu_ps(y);
+            y += 4;
+            msum2 = _mm_add_ps(msum2, _mm_mul_ps(mx, my));
+            d -= 4;
+        }
+
+        if (d > 0) {
+            __m128 mx = masked_read(d, x);
+            __m128 my = masked_read(d, y);
+            msum2 = _mm_add_ps(msum2, _mm_mul_ps(mx, my));
+        }
+
+        msum2 = _mm_hadd_ps(msum2, msum2);
+        msum2 = _mm_hadd_ps(msum2, msum2);
+        return _mm_cvtss_f32(msum2);
+    }
+
+    static float fvec_inner_product_faiss_prefetch(const float* x, const float* y, size_t d) {
+        __m256 msum1 = _mm256_setzero_ps();
+        while (d >= 8) {
+            __m256 mx = _mm256_loadu_ps(x);
+            x += 8;
+            __m256 my = _mm256_loadu_ps(y);
+            y += 8;
+            msum1 = _mm256_add_ps(msum1, _mm256_mul_ps(mx, my));
+            d -= 8;
+        }
+
+        __m128 msum2 = _mm256_extractf128_ps(msum1, 1);
+        msum2 = _mm_add_ps(msum2, _mm256_extractf128_ps(msum1, 0));
+
+        if (d >= 4) {
+            __m128 mx = _mm_loadu_ps(x);
+            x += 4;
+            __m128 my = _mm_loadu_ps(y);
+            y += 4;
+            msum2 = _mm_add_ps(msum2, _mm_mul_ps(mx, my));
+            d -= 4;
+        }
+
+        if (d > 0) {
+            __m128 mx = masked_read(d, x);
+            __m128 my = masked_read(d, y);
+            msum2 = _mm_add_ps(msum2, _mm_mul_ps(mx, my));
+        }
+
+        msum2 = _mm_hadd_ps(msum2, msum2);
+        msum2 = _mm_hadd_ps(msum2, msum2);
+        return _mm_cvtss_f32(msum2);
     }
 
     static float
