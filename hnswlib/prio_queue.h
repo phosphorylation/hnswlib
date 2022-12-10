@@ -18,9 +18,6 @@
 #include <cassert>
 #include <tuple>
 #include <functional>
-#include <mimalloc.h>
-//#include <mimalloc/include/mimalloc-new-delete.h>
-//#include <mimalloc/include/mimalloc.h>
 
 #ifdef __GNUC__
 #define rollbear_prio_q_likely(x)       __builtin_expect(!!(x), 1)
@@ -36,7 +33,7 @@ namespace rollbear
     namespace prio_q_internal
     {
         template <typename T, std::size_t block_size,
-                typename Allocator = mi_stl_allocator<T>>
+                typename Allocator = std::allocator<T>>
         class skip_vector : private Allocator
         {
             using A = std::allocator_traits<Allocator>;
@@ -349,7 +346,7 @@ namespace rollbear
         };
 
         template <std::size_t block_size, typename V,
-                typename Allocator = mi_stl_allocator<V>>
+                typename Allocator = std::allocator<V>>
         class payload
         {
         public:
@@ -383,7 +380,7 @@ namespace rollbear
 
     template <std::size_t block_size, typename T, typename V,
             typename Compare = std::less<T>,
-            typename Allocator = mi_stl_allocator<T>>
+            typename Allocator = std::allocator<T>>
     class prio_queue : private Compare, private prio_q_internal::payload<block_size, V>
     {
         using address = prio_q_internal::heap_heap_addressing<block_size>;

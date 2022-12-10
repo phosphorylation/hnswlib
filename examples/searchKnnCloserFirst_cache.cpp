@@ -10,8 +10,6 @@
 #include <vector>
 #include <iostream>
 #include <sys/time.h>
-#include <mimalloc.h>
-#include <mimalloc-new-delete.h>
 //#include <omp.h>
 namespace
 {
@@ -48,7 +46,6 @@ void inline calculate_acc(idx_t* truth,idx_t* results,int k,float nq){
 }
 
 void test() {
-    std::cout<<mi_version()<<"\n";
     int num_threads=4;
     int ef_s = 20;
     omp_set_num_threads(num_threads);

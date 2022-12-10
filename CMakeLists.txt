@@ -4,7 +4,6 @@ project(hnsw_lib
 
 add_library(hnswlib INTERFACE)
 target_include_directories(hnswlib INTERFACE .)
-find_package(mimalloc 2.0 REQUIRED)
 
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     set(CMAKE_CXX_STANDARD 14)
@@ -18,20 +17,20 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     endif()
 
     add_executable(test_updates examples/updates_test.cpp)
-    target_link_libraries(test_updates hnswlib mimalloc)
+    target_link_libraries(test_updates hnswlib)
 
     add_executable(searchKnnCloserFirst_test examples/searchKnnCloserFirst_test.cpp)
-    target_link_libraries(searchKnnCloserFirst_test hnswlib mimalloc)
+    target_link_libraries(searchKnnCloserFirst_test hnswlib)
 
     add_executable(searchKnnCloserFirst_cache examples/searchKnnCloserFirst_cache.cpp)
-    target_link_libraries(searchKnnCloserFirst_cache hnswlib mimalloc)
+    target_link_libraries(searchKnnCloserFirst_cache hnswlib)
 
     add_executable(searchKnnCloserFirst_old examples/searchKnnCloserFirst_old.cpp)
-    target_link_libraries(searchKnnCloserFirst_old hnswlib mimalloc)
+    target_link_libraries(searchKnnCloserFirst_old hnswlib)
 
     add_executable(main main.cpp sift_1b.cpp)
-    target_link_libraries(main hnswlib mimalloc)
+    target_link_libraries(main hnswlib)
 
     add_executable(create_index examples/create_index.cpp)
-    target_link_libraries(create_index hnswlib mimalloc)
+    target_link_libraries(create_index hnswlib)
 endif()
